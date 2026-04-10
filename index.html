@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8">
-    <title>圓弧 - 數據固定版</title>
+    <title>Curved</title>
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   </head>
   <body>
@@ -36,7 +36,7 @@
         const rows = 6;
         const cols = 15;
         
-        // --- 修正：定義上下邊距，不讓字貼邊 ---
+        // --- 修正：上下邊距不讓字貼邊 ---
         const verticalPadding = 80; // 上下各留 80 像素
         const usableHeight = canvas.height - (verticalPadding * 2);
         const unitW = canvas.width / cols;
@@ -48,7 +48,7 @@
         for (let i = 0; i < rows; i++) {
           for (let j = 0; j < cols; j++) {
             let x = (j * unitW) + (unitW / 2);
-            // y 座標加上 padding，讓整體內容往下移並縮小間距
+            // y 座標加上 padding，整體內容往下移並縮小間距
             let y = (i * unitH) + (unitH / 2) + verticalPadding;
             
             let fixedVal = (0.88888 - (i * 0.001) - (j * 0.002)).toFixed(5);
