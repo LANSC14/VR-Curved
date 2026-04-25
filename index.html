@@ -59,16 +59,26 @@
     <div id="target-hint">找到並點擊：<span id="targetLabel">--</span></div>
     <div id="retryBtn">↻ RETRY</div>
 
-    <a-scene background="color: #0a0a1a">
+    <!-- FIX 1: vr-mode-ui="enterVRButton: #enterVR" 讓 WebXR 正確啟用 -->
+    <!-- FIX 2: 移除 renderer 設定，讓 A-Frame 自動選最佳 -->
+    <a-scene background="color: #0a0a1a" vr-mode-ui="enabled: true">
       <a-entity id="rig" position="0 0 0">
+        <!-- FIX 3: look-controls 在 VR 模式用頭部追蹤，不需要 pointerLockEnabled -->
+        <!-- magicWindowTrackingEnabled:true 讓手機/HMD 頭部追蹤正常 -->
         <a-entity id="cam" camera position="0 2.5 0"
-          look-controls="pointerLockEnabled: false" wasd-controls>
+          look-controls="pointerLockEnabled: false; magicWindowTrackingEnabled: true; touchEnabled: true"
+          wasd-controls>
         </a-entity>
-        <a-entity id="rHand" laser-controls="hand: right"
-          raycaster="objects: .clickable; far: 20; lineColor: #00ffcc; lineOpacity: 0.6">
+
+        <!-- FIX 4: oculus-touch-controls 改用 laser-controls 並加正確 raycaster -->
+        <!-- near:0 確保近距離也能射線偵測 -->
+        <a-entity id="rHand"
+          laser-controls="hand: right"
+          raycaster="objects: .clickable; far: 30; near: 0; lineColor: #00ffcc; lineOpacity: 0.7">
         </a-entity>
-        <a-entity id="lHand" laser-controls="hand: left"
-          raycaster="objects: .clickable; far: 20; lineColor: #00ffcc; lineOpacity: 0.4">
+        <a-entity id="lHand"
+          laser-controls="hand: left"
+          raycaster="objects: .clickable; far: 30; near: 0; lineColor: #00ffcc; lineOpacity: 0.4">
         </a-entity>
       </a-entity>
 
@@ -82,7 +92,10 @@
           font="https://cdn.aframe.io/fonts/Exo2Bold.fnt"></a-text>
       </a-entity>
 
-      <a-entity id="arcRoot" position="0 2.5 0" visible="false"></a-entity>
+      <!-- FIX 5: cylinderWall 是獨立 entity，class=clickable 讓 VR controller 射線可直接偵測 -->
+      <a-entity id="arcRoot" position="0 2.5 0" visible="false">
+        <a-entity id="cylinderWall" class="clickable"></a-entity>
+      </a-entity>
 
       <a-plane rotation="-90 0 0" width="30" height="30"
         color="#080818" roughness="1"></a-plane>
@@ -95,7 +108,7 @@
     let gridValues=[], targetIndex=-1, cellData=[];
     let cylinderMesh=null, canvasTex=null, canvas, ctx;
     let errorCount=0, startTime=0, isRunning=false, rafId=null;
-    let gameState='idle'; // 'idle' | 'playing' | 'result'
+    let gameState='idle';
     let vrRetryMesh=null, vrResultPanel=null;
     let vrHintEl=null, vrTimerEl=null;
 
@@ -106,8 +119,8 @@
     const retryBtn=document.getElementById('retryBtn');
     const startBtn=document.querySelector('#startBtn');
     const arcRoot=document.querySelector('#arcRoot');
+    const cylinderWallEl=document.querySelector('#cylinderWall');
 
-    // ── Canvas 紋理 ──────────────────────────────────────────────
     function initCanvas(){
       canvas=document.createElement('canvas');
       canvas.width=TEX_W; canvas.height=TEX_H;
@@ -145,7 +158,13 @@
     }
 
     function buildCylinder(){
-      if(cylinderMesh){arcRoot.object3D.remove(cylinderMesh);cylinderMesh.geometry.dispose();cylinderMesh.material.dispose();cylinderMesh=null;}
+      // 移除舊 mesh
+      if(cylinderMesh){
+        cylinderWallEl.object3D.remove(cylinderMesh);
+        cylinderMesh.geometry.dispose();
+        cylinderMesh.material.dispose();
+        cylinderMesh=null;
+      }
       const arcRad=THREE.MathUtils.degToRad(ARC_DEG), ts=Math.PI/2-arcRad/2;
       const geo=new THREE.CylinderGeometry(RADIUS,RADIUS,WALL_H,COLS*16,1,true,ts,arcRad);
       const ix=geo.index.array;
@@ -156,43 +175,107 @@
       canvasTex.minFilter=canvasTex.magFilter=THREE.LinearFilter;
       canvasTex.anisotropy=8;
       cylinderMesh=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({map:canvasTex,side:THREE.FrontSide}));
-      arcRoot.object3D.add(cylinderMesh);
+
+      // FIX 6: 把 mesh 掛在 cylinderWallEl.object3D，讓 a-entity class=clickable 生效
+      cylinderWallEl.object3D.add(cylinderMesh);
+
       arcRoot.setAttribute('rotation','0 100 0');
       arcRoot.setAttribute('visible','true');
       drawTexture();
     }
 
-    // ── VR HUD（掛在相機下，跟著視角）──────────────────────────
+    // ── VR HUD ──────────────────────────────────────────────────
+    // FIX 7: VR HUD 改掛在世界空間 (a-scene 直接子元素)，跟著 rig 位置
+    // 不掛在 cam 下，避免在 WebXR 模式坐標系混亂
+    // 用 billboard component 讓它永遠面向玩家
+
+    // 自訂 billboard component：每幀讓 entity 面向相機
+    AFRAME.registerComponent('billboard', {
+      tick: function () {
+        const cam = document.querySelector('#cam');
+        if (!cam || !cam.object3D) return;
+        // 取得世界位置
+        const camWorldPos = new THREE.Vector3();
+        cam.object3D.getWorldPosition(camWorldPos);
+        this.el.object3D.lookAt(camWorldPos);
+      }
+    });
+
     function buildVrHud(){
       if(vrHintEl) return;
-      const cam=document.querySelector('#cam');
 
-      // 計時器：左上角，貼近視野頂端
+      // 計時器 entity（固定在世界，跟 rig 一起）
       vrTimerEl=document.createElement('a-text');
       vrTimerEl.setAttribute('id','vrTimerText');
       vrTimerEl.setAttribute('value','⏱ 00:00.00');
       vrTimerEl.setAttribute('color','#00ffcc');
-      vrTimerEl.setAttribute('width','2.8');
-      vrTimerEl.setAttribute('position','-1.7 2 -3');
+      vrTimerEl.setAttribute('width','3');
+      vrTimerEl.setAttribute('align','left');
+      vrTimerEl.setAttribute('position','0 2.5 0'); // 相對 rig 偏移，下面動態更新
       vrTimerEl.setAttribute('visible','false');
-      cam.appendChild(vrTimerEl);
+      // 掛在 rig 下方便跟著移動
+      document.querySelector('#rig').appendChild(vrTimerEl);
 
-      // 目標提示：右上角，貼近視野頂端
+      // 目標提示 entity
       vrHintEl=document.createElement('a-entity');
-      vrHintEl.setAttribute('position','1.5 2 -3');
+      vrHintEl.setAttribute('id','vrHintRoot');
+      vrHintEl.setAttribute('position','0 2.5 0');
       vrHintEl.setAttribute('visible','false');
+
       const hLabel=document.createElement('a-text');
       hLabel.setAttribute('value','找到並點擊');
       hLabel.setAttribute('align','right'); hLabel.setAttribute('color','#ffffff88');
-      hLabel.setAttribute('width','2.2'); hLabel.setAttribute('position','0 0.1 0');
+      hLabel.setAttribute('width','2.2'); hLabel.setAttribute('position','0 0.15 0');
       vrHintEl.appendChild(hLabel);
+
       const hTxt=document.createElement('a-text');
       hTxt.setAttribute('id','vrTargetText');
       hTxt.setAttribute('value','--');
       hTxt.setAttribute('align','right'); hTxt.setAttribute('color','#ff4466');
-      hTxt.setAttribute('width','3.2'); hTxt.setAttribute('position','0 -0.08 0');
+      hTxt.setAttribute('width','3.2'); hTxt.setAttribute('position','0 -0.05 0');
       vrHintEl.appendChild(hTxt);
-      cam.appendChild(vrHintEl);
+
+      document.querySelector('#rig').appendChild(vrHintEl);
+    }
+
+    // FIX 8: 每幀更新 VR HUD 位置，讓它出現在玩家視野前方
+    function updateVrHudPosition(){
+      if(!vrTimerEl&&!vrHintEl) return;
+      const cam=document.querySelector('#cam');
+      if(!cam||!cam.object3D) return;
+
+      // 取得相機世界方向
+      const dir=new THREE.Vector3(0,0,-1).applyQuaternion(cam.object3D.quaternion);
+      const camPos=new THREE.Vector3();
+      cam.object3D.getWorldPosition(camPos);
+
+      // 計時器：左前方
+      const timerPos=camPos.clone().add(dir.clone().multiplyScalar(2.5));
+      const right=new THREE.Vector3(1,0,0).applyQuaternion(cam.object3D.quaternion);
+      const up=new THREE.Vector3(0,1,0).applyQuaternion(cam.object3D.quaternion);
+      const timerOffset=timerPos.clone()
+        .add(right.clone().multiplyScalar(-0.8))
+        .add(up.clone().multiplyScalar(0.4));
+      const hintOffset=timerPos.clone()
+        .add(right.clone().multiplyScalar(0.8))
+        .add(up.clone().multiplyScalar(0.4));
+
+      // 轉成相對 rig 座標
+      const rig=document.querySelector('#rig');
+      const rigPos=new THREE.Vector3();
+      rig.object3D.getWorldPosition(rigPos);
+
+      if(vrTimerEl){
+        const lp=timerOffset.clone().sub(rigPos);
+        vrTimerEl.setAttribute('position',`${lp.x} ${lp.y} ${lp.z}`);
+        // 面向相機
+        vrTimerEl.object3D.lookAt(camPos);
+      }
+      if(vrHintEl){
+        const lp=hintOffset.clone().sub(rigPos);
+        vrHintEl.setAttribute('position',`${lp.x} ${lp.y} ${lp.z}`);
+        vrHintEl.object3D.lookAt(camPos);
+      }
     }
 
     function setVrHudVisible(v){
@@ -201,14 +284,27 @@
       if(vrTimerEl) vrTimerEl.setAttribute('visible',s);
     }
 
-    // ── VR 結算面板（掛在相機下）────────────────────────────────
+    // ── VR 結算面板 ──────────────────────────────────────────────
     function buildVrResult(timeStr){
       removeVrResult();
       const cam=document.querySelector('#cam');
+      const rig=document.querySelector('#rig');
 
       vrResultPanel=document.createElement('a-entity');
       vrResultPanel.setAttribute('id','vrResultPanel');
-      vrResultPanel.setAttribute('position','0 0 -3');
+
+      // 定位在玩家前方 2.5m
+      const dir=new THREE.Vector3(0,0,-1).applyQuaternion(cam.object3D.quaternion);
+      dir.y=0; dir.normalize();
+      const camPos=new THREE.Vector3();
+      cam.object3D.getWorldPosition(camPos);
+      const panelWorld=camPos.clone().add(dir.multiplyScalar(2.5));
+      const rigPos=new THREE.Vector3();
+      rig.object3D.getWorldPosition(rigPos);
+      const panelLocal=panelWorld.clone().sub(rigPos);
+      vrResultPanel.setAttribute('position',`${panelLocal.x} ${camPos.y-rigPos.y} ${panelLocal.z}`);
+      // 面向玩家
+      vrResultPanel.setAttribute('look-at','#cam');
 
       const bg=document.createElement('a-plane');
       bg.setAttribute('width','3'); bg.setAttribute('height','1.4');
@@ -221,7 +317,7 @@
       txt.setAttribute('width','6'); txt.setAttribute('position','0 0.22 0.02');
       vrResultPanel.appendChild(txt);
 
-      // RETRY plane — 作為射線偵測目標
+      // FIX 9: vrRetryPlane 掛 class=clickable 確保 VR controller 能射線偵測
       const rp=document.createElement('a-plane');
       rp.setAttribute('id','vrRetryPlane');
       rp.setAttribute('class','clickable');
@@ -236,8 +332,8 @@
       rtxt.setAttribute('width','4'); rtxt.setAttribute('position','0 -0.52 0.03');
       vrResultPanel.appendChild(rtxt);
 
-      cam.appendChild(vrResultPanel);
-      vrRetryMesh=rp; // 存參照
+      rig.appendChild(vrResultPanel);
+      vrRetryMesh=rp;
     }
 
     function removeVrResult(){
@@ -255,6 +351,7 @@
       const t=formatTime(performance.now()-startTime);
       hud.textContent='⏱ '+t;
       if(vrTimerEl) vrTimerEl.setAttribute('value','⏱ '+t);
+      updateVrHudPosition();
       rafId=requestAnimationFrame(tick);
     }
 
@@ -312,32 +409,24 @@
 
     retryBtn.addEventListener('click', doRetry);
 
-    // ── 統一射線處理（桌面 + VR 全螢幕模擬共用）──────────────────
+    // ── 統一射線處理 ──────────────────────────────────────────────
     document.querySelector('a-scene').addEventListener('loaded', ()=>{
       const camEl=document.querySelector('#cam');
       const rc=new THREE.Raycaster();
       const mouse=new THREE.Vector2();
 
-      // 收集所有目前應該可點擊的 mesh，附帶 type 標記
       function getTargets(){
         const list=[];
-
-        // START
         if(startBtn.object3D.visible){
           const sp=document.getElementById('startPlane');
           if(sp) sp.object3D.traverse(c=>{if(c.isMesh) list.push({mesh:c,type:'start'});});
         }
-
-        // 數字牆
         if(gameState==='playing'&&cylinderMesh){
           list.push({mesh:cylinderMesh,type:'cylinder'});
         }
-
-        // VR RETRY
         if(gameState==='result'&&vrRetryMesh){
           vrRetryMesh.object3D.traverse(c=>{if(c.isMesh) list.push({mesh:c,type:'retry'});});
         }
-
         return list;
       }
 
@@ -349,7 +438,11 @@
           const cell=cellData.find(c=>u>=c.uMin&&u<c.uMax&&v>=c.vMin&&v<c.vMax);
           if(!cell) return;
           if(cell.index===targetIndex){ doFinish(); }
-          else{ errorCount++; hud.style.color='#ff4466'; setTimeout(()=>{hud.style.color='#00ffcc';},200); }
+          else{
+            errorCount++;
+            hud.style.color='#ff4466';
+            setTimeout(()=>{hud.style.color='#00ffcc';},200);
+          }
         }
         else if(type==='retry'){ doRetry(); }
       }
@@ -366,7 +459,6 @@
         if(t) handleHit(t.type, hits[0].uv);
       }
 
-      // 桌面 mouseup
       let downPos={x:0,y:0};
       window.addEventListener('mousedown', e=>{
         if(e.button!==0) return;
@@ -379,7 +471,6 @@
         fireRay(e.clientX, e.clientY);
       });
 
-      // 游標
       window.addEventListener('mousemove', e=>{
         mouse.x=(e.clientX/window.innerWidth)*2-1;
         mouse.y=-(e.clientY/window.innerHeight)*2+1;
@@ -389,20 +480,46 @@
         document.body.style.cursor=h.length?'pointer':'default';
       });
 
-      // VR 控制器 triggerdown
+      // FIX 10: VR 控制器 triggerdown — 改用 a-frame raycaster component 的 intersections
+      // 這是最可靠的方式，因為 laser-controls 內建 raycaster 已正確設定
       ['rHand','lHand'].forEach(id=>{
         const hand=document.getElementById(id);
         if(!hand) return;
-        hand.addEventListener('triggerdown',()=>{
-          const rc3=hand.components.raycaster;
-          if(!rc3||!rc3.intersections.length) return;
-          const inter=rc3.intersections[0];
-          const hitObj=inter.object;
+
+        hand.addEventListener('triggerdown', ()=>{
+          const raycasterComp=hand.components.raycaster;
+          if(!raycasterComp) return;
+
+          const intersections=raycasterComp.intersections;
+          if(!intersections||!intersections.length) return;
+
+          const inter=intersections[0];
+          const hitMesh=inter.object;
+
+          // 找到對應的 target
           const targets=getTargets();
           for(const t of targets){
-            // 直接比對或往上找父層
-            let cur=hitObj;
-            while(cur){if(cur===t.mesh){handleHit(t.type,inter.uv);return;}cur=cur.parent;}
+            // 往上遍歷父層找 match
+            let cur=hitMesh;
+            while(cur){
+              if(cur===t.mesh){
+                handleHit(t.type, inter.uv);
+                return;
+              }
+              cur=cur.parent;
+            }
+          }
+
+          // FIX 11: cylinderMesh 不在 entity hierarchy，需要直接比對
+          if(gameState==='playing'&&cylinderMesh){
+            let cur=hitMesh;
+            while(cur){
+              if(cur===cylinderMesh){
+                handleHit('cylinder', inter.uv);
+                return;
+              }
+              cur=cur.parent;
+            }
           }
         });
       });
