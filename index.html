@@ -71,7 +71,6 @@
             y=0.28 讓 HUD 出現在視野正上方（0=正中，正數=上移）
             x=0 水平置中
           -->
-          <!-- HUD 推到 z=-8 與數字牆同深度，scale 放大 8 倍補償視角縮小 -->
           <a-entity id="vrHud" visible="false" position="0 4 -7" scale="8 8 8">
             <a-text id="vrTimerText" value="⏱ 00:00.00" color="#00ffcc" width="1.5" align="right" position="-0.06 0 0"></a-text>
             <a-text value="|" color="#ffffff33" width="0.6" align="center" position="0 0 0"></a-text>
@@ -90,7 +89,7 @@
         </a-entity>
       </a-entity>
 
-      <a-entity id="startBtn" position="0 1.6 -2.5">
+      <a-entity id="startBtn" position="0 2.5 -2.5">
         <a-plane id="startPlane" class="clickable"
           width="1.2" height="0.45" color="#003344" opacity="0.95"></a-plane>
         <a-plane width="1.26" height="0.51" color="#00ffcc" opacity="0.25"
