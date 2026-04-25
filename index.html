@@ -40,9 +40,15 @@
         text-align: right;
       }
       #target-hint span {
-        display: block;
-        color: #ff4466; font-size: 30px; font-weight: bold;
-        letter-spacing: 2px;
+        display: block; color: #ff4466; font-size: 30px;
+        font-weight: bold; letter-spacing: 2px;
+      }
+      #retryBtn {
+        position: fixed; top: calc(50% + 80px); left: 50%;
+        transform: translateX(-50%); z-index: 999;
+        font-family: 'Courier New', monospace; font-size: 20px;
+        font-weight: bold; color: #00ffcc; border: 2px solid #00ffcc;
+        padding: 8px 20px; cursor: pointer; display: none;
       }
     </style>
   </head>
@@ -51,340 +57,362 @@
     <div id="crosshair"></div>
     <div id="result"></div>
     <div id="target-hint">找到並點擊：<span id="targetLabel">--</span></div>
-    <div id="retryBtn" style="
-      position: fixed;
-      top: calc(50% + 80px);
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 999;
-      font-family: 'Courier New', monospace;
-      font-size: 20px;
-      font-weight: bold;
-      color: #00ffcc;
-      border: 2px solid #00ffcc;
-      padding: 8px 20px;
-      cursor: pointer;
-      display: none;
-    ">
-      ↻ RETRY
-    </div>
+    <div id="retryBtn">↻ RETRY</div>
 
-    <a-scene background="color: #0a0a1a" vr-mode-ui="enabled: false">
-      <a-entity id="cam" camera position="0 1.6 0"
-        look-controls="pointerLockEnabled: false" wasd-controls>
+    <a-scene background="color: #0a0a1a">
+      <a-entity id="rig" position="0 0 0">
+        <a-entity id="cam" camera position="0 2.5 0"
+          look-controls="pointerLockEnabled: false" wasd-controls>
+        </a-entity>
+        <a-entity id="rHand" laser-controls="hand: right"
+          raycaster="objects: .clickable; far: 20; lineColor: #00ffcc; lineOpacity: 0.6">
+        </a-entity>
+        <a-entity id="lHand" laser-controls="hand: left"
+          raycaster="objects: .clickable; far: 20; lineColor: #00ffcc; lineOpacity: 0.4">
+        </a-entity>
       </a-entity>
 
       <a-entity id="startBtn" position="0 1.6 -2.5">
-        <a-box width="1.2" height="0.45" depth="0.08" color="#003344" opacity="0.95"></a-box>
-        <a-box width="1.26" height="0.51" depth="0.04" color="#00ffcc" opacity="0.25"></a-box>
-        <a-text value="▶  START" align="center" position="0 0 0.06"
-          color="#00ffcc" width="3.5" font="https://cdn.aframe.io/fonts/Exo2Bold.fnt"></a-text>
+        <a-plane id="startPlane" class="clickable"
+          width="1.2" height="0.45" color="#003344" opacity="0.95"></a-plane>
+        <a-plane width="1.26" height="0.51" color="#00ffcc" opacity="0.25"
+          position="0 0 -0.02"></a-plane>
+        <a-text value="▶  START" align="center" position="0 0 0.03"
+          color="#00ffcc" width="3.5"
+          font="https://cdn.aframe.io/fonts/Exo2Bold.fnt"></a-text>
       </a-entity>
 
       <a-entity id="arcRoot" position="0 2.5 0" visible="false"></a-entity>
 
-      <a-plane rotation="-90 0 0" width="30" height="30" color="#080818" roughness="1"></a-plane>
+      <a-plane rotation="-90 0 0" width="30" height="30"
+        color="#080818" roughness="1"></a-plane>
       <a-light type="ambient" color="#ffffff" intensity="2.5"></a-light>
     </a-scene>
 
     <script>
-      const ROWS = 7, COLS = 10;
-      const RADIUS  = 8;
-      const ARC_DEG = 200;
-      const WALL_H  = 5;
-      const TEX_W   = 8192;
-      const TEX_H   = 2048;
+    const ROWS=7, COLS=10, RADIUS=8, ARC_DEG=200, WALL_H=5, TEX_W=8192, TEX_H=2048;
 
-      let gridValues   = [];
-      let targetIndex  = -1;
-      let cellData     = [];
-      let cylinderMesh = null;
-      let canvasTex    = null;
-      let canvas, ctx;
-      let errorCount   = 0; // 新增：錯誤計數器
+    let gridValues=[], targetIndex=-1, cellData=[];
+    let cylinderMesh=null, canvasTex=null, canvas, ctx;
+    let errorCount=0, startTime=0, isRunning=false, rafId=null;
+    let gameState='idle'; // 'idle' | 'playing' | 'result'
+    let vrRetryMesh=null, vrResultPanel=null;
+    let vrHintEl=null, vrTimerEl=null;
 
-      const hud         = document.getElementById('hud');
-      const resultDiv   = document.getElementById('result');
-      const targetHint  = document.getElementById('target-hint');
-      const targetLabel = document.getElementById('targetLabel');
-      const retryBtn    = document.getElementById('retryBtn');
-      const startBtn    = document.querySelector('#startBtn');
-      const arcRoot     = document.querySelector('#arcRoot');
+    const hud=document.getElementById('hud');
+    const resultDiv=document.getElementById('result');
+    const targetHint=document.getElementById('target-hint');
+    const targetLabel=document.getElementById('targetLabel');
+    const retryBtn=document.getElementById('retryBtn');
+    const startBtn=document.querySelector('#startBtn');
+    const arcRoot=document.querySelector('#arcRoot');
 
-      function initCanvas() {
-        canvas        = document.createElement('canvas');
-        canvas.width  = TEX_W;
-        canvas.height = TEX_H;
-        ctx           = canvas.getContext('2d');
+    // ── Canvas 紋理 ──────────────────────────────────────────────
+    function initCanvas(){
+      canvas=document.createElement('canvas');
+      canvas.width=TEX_W; canvas.height=TEX_H;
+      ctx=canvas.getContext('2d');
+    }
+
+    function generateGrid(){
+      gridValues=[];
+      for(let i=0;i<ROWS*COLS;i++) gridValues.push((Math.random()*99.999).toFixed(2));
+      targetIndex=Math.floor(Math.random()*ROWS*COLS);
+    }
+
+    function drawTexture(){
+      ctx.fillStyle='#040412'; ctx.fillRect(0,0,TEX_W,TEX_H);
+      ctx.strokeStyle='#112233'; ctx.lineWidth=2;
+      for(let c=1;c<COLS;c++){const x=c*(TEX_W/COLS);ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,TEX_H);ctx.stroke();}
+      for(let r=1;r<ROWS;r++){const y=r*(TEX_H/ROWS);ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(TEX_W,y);ctx.stroke();}
+      cellData=[];
+      const cW=TEX_W/COLS, cH=TEX_H/ROWS;
+      for(let row=0;row<ROWS;row++){
+        for(let col=0;col<COLS;col++){
+          const idx=row*COLS+col, cx=(col+.5)*cW, cy=(row+.5)*cH;
+          ctx.save(); ctx.translate(cx,cy); ctx.scale(-1,1); ctx.translate(-cx,-cy);
+          ctx.font='bold 115px "Courier New",monospace';
+          ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.fillStyle='#00eebb'; ctx.shadowColor='#00eebb66'; ctx.shadowBlur=12;
+          ctx.fillText(gridValues[idx],cx,cy); ctx.shadowBlur=0; ctx.restore();
+          cellData.push({index:idx,uMin:col/COLS,uMax:(col+1)/COLS,vMin:row/ROWS,vMax:(row+1)/ROWS});
+        }
+      }
+      const g=ctx.createLinearGradient(0,0,0,TEX_H);
+      g.addColorStop(0,'rgba(0,200,180,0.08)'); g.addColorStop(.5,'rgba(0,0,0,0)'); g.addColorStop(1,'rgba(0,200,180,0.08)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,TEX_W,TEX_H);
+      if(canvasTex) canvasTex.needsUpdate=true;
+    }
+
+    function buildCylinder(){
+      if(cylinderMesh){arcRoot.object3D.remove(cylinderMesh);cylinderMesh.geometry.dispose();cylinderMesh.material.dispose();cylinderMesh=null;}
+      const arcRad=THREE.MathUtils.degToRad(ARC_DEG), ts=Math.PI/2-arcRad/2;
+      const geo=new THREE.CylinderGeometry(RADIUS,RADIUS,WALL_H,COLS*16,1,true,ts,arcRad);
+      const ix=geo.index.array;
+      for(let i=0;i<ix.length;i+=3){const t=ix[i+1];ix[i+1]=ix[i+2];ix[i+2]=t;}
+      geo.index.needsUpdate=true; geo.computeVertexNormals();
+      canvasTex=new THREE.CanvasTexture(canvas);
+      canvasTex.wrapS=canvasTex.wrapT=THREE.ClampToEdgeWrapping;
+      canvasTex.minFilter=canvasTex.magFilter=THREE.LinearFilter;
+      canvasTex.anisotropy=8;
+      cylinderMesh=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({map:canvasTex,side:THREE.FrontSide}));
+      arcRoot.object3D.add(cylinderMesh);
+      arcRoot.setAttribute('rotation','0 100 0');
+      arcRoot.setAttribute('visible','true');
+      drawTexture();
+    }
+
+    // ── VR HUD（掛在相機下，跟著視角）──────────────────────────
+    function buildVrHud(){
+      if(vrHintEl) return;
+      const cam=document.querySelector('#cam');
+
+      // 計時器：左上角，貼近視野頂端
+      vrTimerEl=document.createElement('a-text');
+      vrTimerEl.setAttribute('id','vrTimerText');
+      vrTimerEl.setAttribute('value','⏱ 00:00.00');
+      vrTimerEl.setAttribute('color','#00ffcc');
+      vrTimerEl.setAttribute('width','2.8');
+      vrTimerEl.setAttribute('position','-1.7 2 -3');
+      vrTimerEl.setAttribute('visible','false');
+      cam.appendChild(vrTimerEl);
+
+      // 目標提示：右上角，貼近視野頂端
+      vrHintEl=document.createElement('a-entity');
+      vrHintEl.setAttribute('position','1.5 2 -3');
+      vrHintEl.setAttribute('visible','false');
+      const hLabel=document.createElement('a-text');
+      hLabel.setAttribute('value','找到並點擊');
+      hLabel.setAttribute('align','right'); hLabel.setAttribute('color','#ffffff88');
+      hLabel.setAttribute('width','2.2'); hLabel.setAttribute('position','0 0.1 0');
+      vrHintEl.appendChild(hLabel);
+      const hTxt=document.createElement('a-text');
+      hTxt.setAttribute('id','vrTargetText');
+      hTxt.setAttribute('value','--');
+      hTxt.setAttribute('align','right'); hTxt.setAttribute('color','#ff4466');
+      hTxt.setAttribute('width','3.2'); hTxt.setAttribute('position','0 -0.08 0');
+      vrHintEl.appendChild(hTxt);
+      cam.appendChild(vrHintEl);
+    }
+
+    function setVrHudVisible(v){
+      const s=v?'true':'false';
+      if(vrHintEl) vrHintEl.setAttribute('visible',s);
+      if(vrTimerEl) vrTimerEl.setAttribute('visible',s);
+    }
+
+    // ── VR 結算面板（掛在相機下）────────────────────────────────
+    function buildVrResult(timeStr){
+      removeVrResult();
+      const cam=document.querySelector('#cam');
+
+      vrResultPanel=document.createElement('a-entity');
+      vrResultPanel.setAttribute('id','vrResultPanel');
+      vrResultPanel.setAttribute('position','0 0 -3');
+
+      const bg=document.createElement('a-plane');
+      bg.setAttribute('width','3'); bg.setAttribute('height','1.4');
+      bg.setAttribute('color','#001122'); bg.setAttribute('opacity','0.93');
+      vrResultPanel.appendChild(bg);
+
+      const txt=document.createElement('a-text');
+      txt.setAttribute('value',`✓  ${timeStr}\nErrors: ${errorCount}\n找到目標！`);
+      txt.setAttribute('align','center'); txt.setAttribute('color','#ffcc00');
+      txt.setAttribute('width','6'); txt.setAttribute('position','0 0.22 0.02');
+      vrResultPanel.appendChild(txt);
+
+      // RETRY plane — 作為射線偵測目標
+      const rp=document.createElement('a-plane');
+      rp.setAttribute('id','vrRetryPlane');
+      rp.setAttribute('class','clickable');
+      rp.setAttribute('width','1.6'); rp.setAttribute('height','0.45');
+      rp.setAttribute('color','#003344'); rp.setAttribute('opacity','0.95');
+      rp.setAttribute('position','0 -0.52 0.01');
+      vrResultPanel.appendChild(rp);
+
+      const rtxt=document.createElement('a-text');
+      rtxt.setAttribute('value','↻  RETRY');
+      rtxt.setAttribute('align','center'); rtxt.setAttribute('color','#00ffcc');
+      rtxt.setAttribute('width','4'); rtxt.setAttribute('position','0 -0.52 0.03');
+      vrResultPanel.appendChild(rtxt);
+
+      cam.appendChild(vrResultPanel);
+      vrRetryMesh=rp; // 存參照
+    }
+
+    function removeVrResult(){
+      if(vrResultPanel&&vrResultPanel.parentNode) vrResultPanel.parentNode.removeChild(vrResultPanel);
+      vrResultPanel=null; vrRetryMesh=null;
+    }
+
+    // ── 計時 ─────────────────────────────────────────────────────
+    function formatTime(ms){
+      return `${Math.floor(ms/60000).toString().padStart(2,'0')}:${Math.floor((ms%60000)/1000).toString().padStart(2,'0')}.${Math.floor((ms%1000)/10).toString().padStart(2,'0')}`;
+    }
+
+    function tick(){
+      if(!isRunning) return;
+      const t=formatTime(performance.now()-startTime);
+      hud.textContent='⏱ '+t;
+      if(vrTimerEl) vrTimerEl.setAttribute('value','⏱ '+t);
+      rafId=requestAnimationFrame(tick);
+    }
+
+    // ── 遊戲流程 ─────────────────────────────────────────────────
+    function doStart(){
+      errorCount=0; gameState='playing';
+      generateGrid();
+      if(!canvas) initCanvas();
+      buildCylinder();
+      buildVrHud();
+
+      const camEl=document.querySelector('#cam');
+      const lc=camEl.components['look-controls'];
+      if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
+      camEl.setAttribute('position',{x:0,y:2.5,z:0});
+
+      startBtn.setAttribute('visible','false');
+      removeVrResult();
+
+      hud.style.display='block'; hud.style.color='#00ffcc';
+      targetHint.style.display='block';
+      targetLabel.textContent=gridValues[targetIndex];
+      resultDiv.style.display='none';
+      retryBtn.style.display='none';
+
+      const vtt=document.getElementById('vrTargetText');
+      if(vtt) vtt.setAttribute('value',gridValues[targetIndex]);
+      setVrHudVisible(true);
+
+      startTime=performance.now(); isRunning=true;
+      rafId=requestAnimationFrame(tick);
+    }
+
+    function doFinish(){
+      if(!isRunning) return;
+      isRunning=false; gameState='result';
+      cancelAnimationFrame(rafId);
+      const t=formatTime(performance.now()-startTime);
+      hud.textContent='⏱ '+t; hud.style.color='#ffcc00';
+      resultDiv.innerHTML=`✓ &nbsp;${t}<br><span style="font-size:20px;color:#ff4466">Errors: ${errorCount}</span><br><span style="font-size:16px;color:#ffffff88">找到目標！</span>`;
+      resultDiv.style.display='block';
+      targetHint.style.display='none';
+      retryBtn.style.display='block';
+      setVrHudVisible(false);
+      buildVrResult(t);
+    }
+
+    function doRetry(){
+      gameState='idle';
+      resultDiv.style.display='none';
+      retryBtn.style.display='none';
+      removeVrResult();
+      doStart();
+    }
+
+    retryBtn.addEventListener('click', doRetry);
+
+    // ── 統一射線處理（桌面 + VR 全螢幕模擬共用）──────────────────
+    document.querySelector('a-scene').addEventListener('loaded', ()=>{
+      const camEl=document.querySelector('#cam');
+      const rc=new THREE.Raycaster();
+      const mouse=new THREE.Vector2();
+
+      // 收集所有目前應該可點擊的 mesh，附帶 type 標記
+      function getTargets(){
+        const list=[];
+
+        // START
+        if(startBtn.object3D.visible){
+          const sp=document.getElementById('startPlane');
+          if(sp) sp.object3D.traverse(c=>{if(c.isMesh) list.push({mesh:c,type:'start'});});
+        }
+
+        // 數字牆
+        if(gameState==='playing'&&cylinderMesh){
+          list.push({mesh:cylinderMesh,type:'cylinder'});
+        }
+
+        // VR RETRY
+        if(gameState==='result'&&vrRetryMesh){
+          vrRetryMesh.object3D.traverse(c=>{if(c.isMesh) list.push({mesh:c,type:'retry'});});
+        }
+
+        return list;
       }
 
-      function generateGrid() {
-        gridValues = [];
-        for (let i = 0; i < ROWS * COLS; i++)
-          gridValues.push((Math.random() * 99.999).toFixed(2));
-        targetIndex = Math.floor(Math.random() * ROWS * COLS);
+      function handleHit(type, uv){
+        if(type==='start'){ doStart(); }
+        else if(type==='cylinder'){
+          if(!uv) return;
+          const u=uv.x, v=1-uv.y;
+          const cell=cellData.find(c=>u>=c.uMin&&u<c.uMax&&v>=c.vMin&&v<c.vMax);
+          if(!cell) return;
+          if(cell.index===targetIndex){ doFinish(); }
+          else{ errorCount++; hud.style.color='#ff4466'; setTimeout(()=>{hud.style.color='#00ffcc';},200); }
+        }
+        else if(type==='retry'){ doRetry(); }
       }
 
-      function drawTexture() {
-        ctx.fillStyle = '#040412';
-        ctx.fillRect(0, 0, TEX_W, TEX_H);
+      function fireRay(clientX, clientY){
+        mouse.x=(clientX/window.innerWidth)*2-1;
+        mouse.y=-(clientY/window.innerHeight)*2+1;
+        rc.setFromCamera(mouse, camEl.getObject3D('camera'));
+        const targets=getTargets();
+        if(!targets.length) return;
+        const hits=rc.intersectObjects(targets.map(t=>t.mesh), false);
+        if(!hits.length) return;
+        const t=targets.find(t=>t.mesh===hits[0].object);
+        if(t) handleHit(t.type, hits[0].uv);
+      }
 
-        ctx.strokeStyle = '#112233';
-        ctx.lineWidth   = 2;
-        for (let c = 1; c < COLS; c++) {
-          const x = c * (TEX_W / COLS);
-          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, TEX_H); ctx.stroke();
-        }
-        for (let r = 1; r < ROWS; r++) {
-          const y = r * (TEX_H / ROWS);
-          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(TEX_W, y); ctx.stroke();
-        }
+      // 桌面 mouseup
+      let downPos={x:0,y:0};
+      window.addEventListener('mousedown', e=>{
+        if(e.button!==0) return;
+        downPos={x:e.clientX,y:e.clientY};
+      });
+      window.addEventListener('mouseup', e=>{
+        if(e.button!==0) return;
+        const dx=e.clientX-downPos.x, dy=e.clientY-downPos.y;
+        if(Math.sqrt(dx*dx+dy*dy)>8) return;
+        fireRay(e.clientX, e.clientY);
+      });
 
-        cellData = [];
-        const cellW = TEX_W / COLS;
-        const cellH = TEX_H / ROWS;
+      // 游標
+      window.addEventListener('mousemove', e=>{
+        mouse.x=(e.clientX/window.innerWidth)*2-1;
+        mouse.y=-(e.clientY/window.innerHeight)*2+1;
+        rc.setFromCamera(mouse, camEl.getObject3D('camera'));
+        const t=getTargets();
+        const h=rc.intersectObjects(t.map(x=>x.mesh),false);
+        document.body.style.cursor=h.length?'pointer':'default';
+      });
 
-        for (let row = 0; row < ROWS; row++) {
-          for (let col = 0; col < COLS; col++) {
-            const idx = row * COLS + col;
-            const cx  = (col + 0.5) * cellW;
-            const cy  = (row + 0.5) * cellH;
-
-            ctx.save();
-            ctx.translate(cx, cy);
-            ctx.scale(-1, 1);
-            ctx.translate(-cx, -cy);
-
-            const fs = 115;
-            ctx.font         = `bold ${fs}px "Courier New", monospace`;
-            ctx.textAlign    = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillStyle    = '#00eebb';
-            ctx.shadowColor  = '#00eebb66';
-            ctx.shadowBlur   = 12;
-            ctx.fillText(gridValues[idx], cx, cy);
-            ctx.shadowBlur   = 0;
-
-            ctx.restore();
-
-            cellData.push({
-              index: idx,
-              uMin: col / COLS,       uMax: (col + 1) / COLS,
-              vMin: row / ROWS,       vMax: (row + 1) / ROWS,
-            });
+      // VR 控制器 triggerdown
+      ['rHand','lHand'].forEach(id=>{
+        const hand=document.getElementById(id);
+        if(!hand) return;
+        hand.addEventListener('triggerdown',()=>{
+          const rc3=hand.components.raycaster;
+          if(!rc3||!rc3.intersections.length) return;
+          const inter=rc3.intersections[0];
+          const hitObj=inter.object;
+          const targets=getTargets();
+          for(const t of targets){
+            // 直接比對或往上找父層
+            let cur=hitObj;
+            while(cur){if(cur===t.mesh){handleHit(t.type,inter.uv);return;}cur=cur.parent;}
           }
-        }
-
-        const grad = ctx.createLinearGradient(0, 0, 0, TEX_H);
-        grad.addColorStop(0,   'rgba(0,200,180,0.08)');
-        grad.addColorStop(0.5, 'rgba(0,0,0,0)');
-        grad.addColorStop(1,   'rgba(0,200,180,0.08)');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, TEX_W, TEX_H);
-
-        if (canvasTex) canvasTex.needsUpdate = true;
-      }
-
-      function buildCylinder() {
-        if (cylinderMesh) {
-          arcRoot.object3D.remove(cylinderMesh);
-          cylinderMesh.geometry.dispose();
-          cylinderMesh.material.dispose();
-          cylinderMesh = null;
-        }
-
-        const arcRad     = THREE.MathUtils.degToRad(ARC_DEG);
-        const thetaStart = Math.PI / 2 - arcRad / 2;
-
-        const geo = new THREE.CylinderGeometry(
-          RADIUS, RADIUS, WALL_H,
-          COLS * 16, 1,
-          true,
-          thetaStart, arcRad
-        );
-
-        const idx = geo.index.array;
-        for (let i = 0; i < idx.length; i += 3) {
-          const tmp = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = tmp;
-        }
-        geo.index.needsUpdate = true;
-        geo.computeVertexNormals();
-
-        canvasTex               = new THREE.CanvasTexture(canvas);
-        canvasTex.wrapS         = THREE.ClampToEdgeWrapping;
-        canvasTex.wrapT         = THREE.ClampToEdgeWrapping;
-        canvasTex.minFilter     = THREE.LinearFilter;
-        canvasTex.magFilter     = THREE.LinearFilter;
-        canvasTex.anisotropy    = 8;
-
-        const mat = new THREE.MeshBasicMaterial({
-          map:  canvasTex,
-          side: THREE.FrontSide,
-        });
-
-        cylinderMesh = new THREE.Mesh(geo, mat);
-        arcRoot.object3D.add(cylinderMesh);
-        // --- 請加入下面這行 ---
-        arcRoot.setAttribute('rotation', '0 100 0'); // 100 是 ARC_DEG(200) 的一半
-        // ----------------------
-        arcRoot.setAttribute('visible', 'true');
-
-        drawTexture();
-      }
-
-      // ── 計時 ──
-      let startTime = 0, isRunning = false, rafId = null;
-
-      function formatTime(ms) {
-        const min = Math.floor(ms / 60000).toString().padStart(2,'0');
-        const sec = Math.floor((ms % 60000) / 1000).toString().padStart(2,'0');
-        const cs  = Math.floor((ms % 1000) / 10).toString().padStart(2,'0');
-        return `${min}:${sec}.${cs}`;
-      }
-
-      function tick() {
-        if (!isRunning) return;
-        hud.textContent = '⏱ ' + formatTime(performance.now() - startTime);
-        rafId = requestAnimationFrame(tick);
-      }
-
-      function resetCameraToCenter() {
-        const camEl = document.querySelector('#cam');
-        const lc = camEl.components['look-controls'];
-        if (lc) {
-          lc.yawObject.rotation.y = 0;
-          lc.pitchObject.rotation.x = 0;
-        }
-      }
-
-      function doStart() {
-  errorCount = 0; // 重置錯誤計數
-  generateGrid();
-  if (!canvas) initCanvas();
-  buildCylinder();
-  resetCameraToCenter();
-
-  // --- 加入這段：讓人在正式開始後變高 (例如 3.0m) ---
-  const camEl = document.querySelector('#cam');
-  camEl.setAttribute('position', {x: 0, y: 2.5, z: 0}); 
-  // ----------------------------------------------
-
-  startBtn.setAttribute('visible', 'false');
-  targetHint.style.display = 'block';
-  targetLabel.textContent = gridValues[targetIndex];
-  hud.style.display = 'block';
-  hud.style.color = '#00ffcc';
-  resultDiv.style.display = 'none';
-  startTime = performance.now();
-  isRunning = true;
-  rafId = requestAnimationFrame(tick);
-}
-
-      function doFinish() {
-        if (!isRunning) return;
-        isRunning = false;
-        cancelAnimationFrame(rafId);
-        const t = formatTime(performance.now() - startTime);
-        hud.textContent = '⏱ ' + t;
-        hud.style.color = '#ffcc00';
-        // 在結算中顯示錯誤次數
-        resultDiv.innerHTML = `✓ &nbsp;${t}<br><span style="font-size:20px;color:#ff4466">Errors: ${errorCount}</span><br><span style="font-size:16px;color:#ffffff88">找到目標！</span>`;
-        resultDiv.style.display  = 'block';
-        targetHint.style.display = 'none';
-        retryBtn.style.display   = 'block';
-      }
-
-      // ── 射線 + UV 點擊 ──
-      document.querySelector('a-scene').addEventListener('loaded', () => {
-        const camEl     = document.querySelector('#cam');
-
-        // 場景載入後立刻把視角歸零到正中央
-        setTimeout(() => {
-          const lc = camEl.components['look-controls'];
-          if (lc) {
-            lc.yawObject.rotation.y = 0;
-            lc.pitchObject.rotation.x = 0;
-          }
-        }, 0);
-
-        const raycaster = new THREE.Raycaster();
-        const mouse     = new THREE.Vector2();
-
-        function setMouse(e) {
-          mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1;
-          mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-          raycaster.setFromCamera(mouse, camEl.getObject3D('camera'));
-        }
-
-        function getBtnMeshes() {
-          if (!startBtn.object3D.visible) return [];
-          const m = [];
-          startBtn.object3D.traverse(c => { if (c.isMesh) m.push(c); });
-          return m;
-        }
-
-        let downPos = { x: 0, y: 0 }, downHitBtn = false;
-
-        window.addEventListener('mousedown', (e) => {
-          if (e.button !== 0) return;
-          downPos    = { x: e.clientX, y: e.clientY };
-          setMouse(e);
-          downHitBtn = raycaster.intersectObjects(getBtnMeshes()).length > 0;
-          if (downHitBtn) { e.stopPropagation(); e.preventDefault(); }
-        }, true);
-
-        window.addEventListener('mouseup', (e) => {
-          if (e.button !== 0) return;
-          const dx = e.clientX - downPos.x, dy = e.clientY - downPos.y;
-          if (Math.sqrt(dx*dx + dy*dy) > 5) return;
-          setMouse(e);
-
-          if (downHitBtn) {
-            if (raycaster.intersectObjects(getBtnMeshes()).length > 0) doStart();
-            downHitBtn = false;
-            return;
-          }
-
-          if (!isRunning || !cylinderMesh) return;
-          const hits = raycaster.intersectObject(cylinderMesh);
-          if (!hits.length || !hits[0].uv) return;
-
-          const u = hits[0].uv.x;
-          const v = 1 - hits[0].uv.y;
-
-          const found = cellData.find(c =>
-            u >= c.uMin && u < c.uMax &&
-            v >= c.vMin && v < c.vMax
-          );
-          if (!found) return;
-
-          if (found.index === targetIndex) {
-            doFinish();
-          } else {
-            errorCount++; // 點擊錯誤次數加 1
-            hud.style.color = '#ff4466';
-            setTimeout(() => { hud.style.color = '#00ffcc'; }, 200);
-          }
-        });
-
-        window.addEventListener('mousemove', (e) => {
-          setMouse(e);
-          const btnHit = raycaster.intersectObjects(getBtnMeshes()).length > 0;
-          const cylHit = cylinderMesh
-            ? raycaster.intersectObject(cylinderMesh).length > 0
-            : false;
-          document.body.style.cursor = (btnHit || cylHit) ? 'pointer' : 'default';
         });
       });
 
-      retryBtn.addEventListener('click', () => {
-  resultDiv.style.display = 'none';
-  retryBtn.style.display = 'none';
-  // 同樣重玩時回到 1.6m
-  document.querySelector('#cam').setAttribute('position', {x: 0, y: 1.6, z: 0});
-  doStart();
-});
-
+      // 初始視角歸零
+      setTimeout(()=>{
+        const lc=camEl.components['look-controls'];
+        if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
+      },0);
+    });
     </script>
-  </body> 
+  </body>
 </html>
