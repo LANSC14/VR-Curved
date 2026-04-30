@@ -66,7 +66,7 @@
           wasd-controls>
         </a-entity>
 
-        <!-- VR HUD: 掛在 rig 下，用 JS 每幀對齊相機前方 -->
+        <!-- VR HUD：掛在 rig 下，JS 每幀更新 position + quaternion -->
         <a-entity id="vrHud" visible="false">
           <a-text id="vrTimerText" value="⏱ 00:00.00" color="#00ffcc" width="1.5" align="right" position="-0.06 0 0"></a-text>
           <a-text value="|" color="#ffffff33" width="0.6" align="center" position="0 0 0"></a-text>
@@ -95,9 +95,7 @@
       </a-entity>
 
       <a-entity id="arcRoot" position="0 2.5 0" visible="false">
-        <!-- 這個 plane 是 VR laser 的真正打靶目標，透明覆蓋在 cylinder 上 -->
         <a-entity id="cylinderWall" class="clickable"></a-entity>
-        <!-- 用來讓 VR laser 可以打到的 proxy mesh entity -->
         <a-entity id="cylinderProxy" class="vrRayTarget"></a-entity>
       </a-entity>
 
@@ -126,6 +124,15 @@
     const cylinderWallEl=document.querySelector('#cylinderWall');
     const cylinderProxyEl=document.querySelector('#cylinderProxy');
     const vrHudEl=document.getElementById('vrHud');
+
+    // 暫存向量，避免每幀 GC
+    const _camWorld=new THREE.Vector3();
+    const _rigWorld=new THREE.Vector3();
+    const _forward=new THREE.Vector3();
+    const _hudWorld=new THREE.Vector3();
+    const _camQuat=new THREE.Quaternion();
+    const _rigQuat=new THREE.Quaternion();
+    const _invRigQuat=new THREE.Quaternion();
 
     function initCanvas(){
       canvas=document.createElement('canvas');
@@ -164,14 +171,12 @@
     }
 
     function buildCylinder(){
-      // 清除舊的 mesh
       if(cylinderMesh){
         cylinderWallEl.object3D.remove(cylinderMesh);
         cylinderMesh.geometry.dispose();
         cylinderMesh.material.dispose();
         cylinderMesh=null;
       }
-      // 清除舊的 proxy mesh
       if(proxyMesh){
         cylinderProxyEl.object3D.remove(proxyMesh);
         proxyMesh.geometry.dispose();
@@ -184,17 +189,16 @@
       const ix=geo.index.array;
       for(let i=0;i<ix.length;i+=3){const t=ix[i+1];ix[i+1]=ix[i+2];ix[i+2]=t;}
       geo.index.needsUpdate=true; geo.computeVertexNormals();
+
       canvasTex=new THREE.CanvasTexture(canvas);
       canvasTex.wrapS=canvasTex.wrapT=THREE.ClampToEdgeWrapping;
       canvasTex.minFilter=canvasTex.magFilter=THREE.LinearFilter;
       canvasTex.anisotropy=8;
+
       cylinderMesh=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({map:canvasTex,side:THREE.FrontSide}));
       cylinderWallEl.object3D.add(cylinderMesh);
 
-      // 建立透明 proxy mesh 供 VR laser raycaster 偵測
-      // 用相同 geometry，透明材質
-      const proxyGeo=geo.clone();
-      proxyMesh=new THREE.Mesh(proxyGeo,new THREE.MeshBasicMaterial({
+      proxyMesh=new THREE.Mesh(geo.clone(),new THREE.MeshBasicMaterial({
         transparent:true, opacity:0, side:THREE.FrontSide, depthWrite:false
       }));
       cylinderProxyEl.object3D.add(proxyMesh);
@@ -202,37 +206,59 @@
       arcRoot.setAttribute('rotation','0 90 0');
       arcRoot.setAttribute('visible','true');
       drawTexture();
+
+      setTimeout(()=>{
+        ['rHand','lHand'].forEach(id=>{
+          const hand=document.getElementById(id);
+          if(hand&&hand.components.raycaster) hand.components.raycaster.refreshObjects();
+        });
+      },200);
     }
 
-    // VR HUD：每幀計算相機前方位置並更新
     function updateVrHudPosition(){
       if(!vrHudEl || vrHudEl.getAttribute('visible')==='false') return;
       const cam=document.querySelector('#cam');
       const rig=document.querySelector('#rig');
       if(!cam||!rig) return;
 
-      const camWorldPos=new THREE.Vector3();
-      cam.object3D.getWorldPosition(camWorldPos);
+      // 取得相機世界座標與朝向
+      cam.object3D.getWorldPosition(_camWorld);
+      cam.object3D.getWorldQuaternion(_camQuat);
 
-      // 相機前方向量（水平分量，不跟著低頭）
-      const forward=new THREE.Vector3(0,0,-1).applyQuaternion(cam.object3D.quaternion);
-      forward.y=0;
-      if(forward.length()<0.001) return;
-      forward.normalize();
+      // 水平前方向（忽略 pitch，HUD 不跟著低頭）
+      _forward.set(0,0,-1).applyQuaternion(_camQuat);
+      _forward.y=0;
+      if(_forward.lengthSq()<0.0001) return;
+      _forward.normalize();
 
-      const dist=1.4;
-      const hudWorldPos=camWorldPos.clone().add(forward.multiplyScalar(dist));
-      hudWorldPos.y=camWorldPos.y+0.25; // 稍微偏上
+      // HUD 世界座標 = 相機前方 1.4m，略高 0.25m
+      _hudWorld.copy(_camWorld).addScaledVector(_forward, 1.4);
+      _hudWorld.y=_camWorld.y+0.25;
 
-      // 轉成 rig local 座標
-      const rigWorldPos=new THREE.Vector3();
-      rig.object3D.getWorldPosition(rigWorldPos);
-      const localPos=hudWorldPos.sub(rigWorldPos);
+      // 轉成 rig local position
+      rig.object3D.getWorldPosition(_rigWorld);
+      vrHudEl.object3D.position.set(
+        _hudWorld.x-_rigWorld.x,
+        _hudWorld.y-_rigWorld.y,
+        _hudWorld.z-_rigWorld.z
+      );
 
-      vrHudEl.object3D.position.set(localPos.x, localPos.y, localPos.z);
+      // rig 的世界 quaternion 的逆，用來把世界朝向轉成 rig local 朝向
+      // 讓 HUD 正面朝向相機，不受 rig rotation 疊加影響
+      rig.object3D.getWorldQuaternion(_rigQuat);
+      _invRigQuat.copy(_rigQuat).invert();
 
-      // 讓 HUD 朝向相機
-      vrHudEl.object3D.lookAt(camWorldPos);
+      // 計算「從 HUD 位置朝向相機」的世界朝向
+      // HUD 要面向相機：前方 = camWorld - hudWorld（已 normalize）
+      // Three.js Object3D 預設前方是 -Z，所以用 setFromUnitVectors(-Z → 朝相機方向)
+      const _faceDir=new THREE.Vector3().subVectors(_camWorld, _hudWorld).normalize();
+      const _worldFaceQuat=new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0,0,-1),
+        _faceDir
+      );
+
+      // local quaternion = inv(rigQuat) * worldFaceQuat
+      vrHudEl.object3D.quaternion.copy(_invRigQuat).multiply(_worldFaceQuat);
     }
 
     function setVrHudVisible(v){
@@ -247,15 +273,17 @@
       vrResultPanel=document.createElement('a-entity');
       vrResultPanel.setAttribute('id','vrResultPanel');
 
-      const dir=new THREE.Vector3(0,0,-1).applyQuaternion(cam.object3D.quaternion);
-      dir.y=0; dir.normalize();
-      const camPos=new THREE.Vector3();
-      cam.object3D.getWorldPosition(camPos);
-      const panelWorld=camPos.clone().add(dir.multiplyScalar(7));
-      const rigPos=new THREE.Vector3();
-      rig.object3D.getWorldPosition(rigPos);
-      const panelLocal=panelWorld.clone().sub(rigPos);
-      vrResultPanel.setAttribute('position',`${panelLocal.x+0.3} ${camPos.y-rigPos.y} ${panelLocal.z}`);
+      cam.object3D.getWorldPosition(_camWorld);
+      cam.object3D.getWorldQuaternion(_camQuat);
+      _forward.set(0,0,-1).applyQuaternion(_camQuat);
+      _forward.y=0; _forward.normalize();
+
+      const panelWorld=_camWorld.clone().addScaledVector(_forward, 7);
+      rig.object3D.getWorldPosition(_rigWorld);
+
+      vrResultPanel.setAttribute('position',
+        `${panelWorld.x-_rigWorld.x} ${_camWorld.y-_rigWorld.y} ${panelWorld.z-_rigWorld.z}`
+      );
       vrResultPanel.setAttribute('look-at','#cam');
 
       const bg=document.createElement('a-plane');
@@ -286,13 +314,10 @@
       rig.appendChild(vrResultPanel);
       vrRetryMesh=rp;
 
-      // 動態加入 vrRayTarget class 供 laser raycaster 偵測
       setTimeout(()=>{
         ['rHand','lHand'].forEach(id=>{
           const hand=document.getElementById(id);
-          if(hand&&hand.components.raycaster){
-            hand.components.raycaster.refreshObjects();
-          }
+          if(hand&&hand.components.raycaster) hand.components.raycaster.refreshObjects();
         });
       },100);
     }
@@ -320,16 +345,6 @@
       generateGrid();
       if(!canvas) initCanvas();
       buildCylinder();
-
-      // 重新設定 VR laser raycaster 讓它能掃到 proxy
-      setTimeout(()=>{
-        ['rHand','lHand'].forEach(id=>{
-          const hand=document.getElementById(id);
-          if(hand&&hand.components.raycaster){
-            hand.components.raycaster.refreshObjects();
-          }
-        });
-      },200);
 
       const camEl=document.querySelector('#cam');
       const lc=camEl.components['look-controls'];
@@ -449,7 +464,6 @@
         document.body.style.cursor=h.length?'pointer':'default';
       });
 
-      // VR 手把 trigger 處理
       ['rHand','lHand'].forEach(id=>{
         const hand=document.getElementById(id);
         if(!hand) return;
@@ -461,7 +475,7 @@
           const inter=intersections[0];
           const hitMesh=inter.object;
 
-          // 先檢查 start / retry (A-Frame entities)
+          // start / retry
           const targets=getTargets().filter(t=>t.type!=='cylinder');
           for(const t of targets){
             let cur=hitMesh;
@@ -471,14 +485,11 @@
             }
           }
 
-          // 檢查 cylinderProxy 是否被打到，若是則用其 UV 對應到 cylinderMesh
+          // proxy → cylinder
           if(gameState==='playing'&&proxyMesh){
             let cur=hitMesh;
             while(cur){
-              if(cur===proxyMesh){
-                handleHit('cylinder', inter.uv);
-                return;
-              }
+              if(cur===proxyMesh){ handleHit('cylinder', inter.uv); return; }
               cur=cur.parent;
             }
           }
