@@ -60,10 +60,10 @@
     <div id="retryBtn">↻ RETRY</div>
 
     <a-scene background="color: #0a0a1a" vr-mode-ui="enabled: true">
-      <a-entity id="rig" position="0 0 0">
+      <a-entity id="rig" position="0 0 0" wasd-controls>
         <a-entity id="cam" camera position="0 2.5 0"
           look-controls="pointerLockEnabled: false; magicWindowTrackingEnabled: true; touchEnabled: true"
-          wasd-controls>
+          >
         </a-entity>
         <a-entity id="rHand"
           laser-controls="hand: right"
