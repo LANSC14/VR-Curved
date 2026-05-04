@@ -65,19 +65,10 @@
           look-controls="pointerLockEnabled: false; magicWindowTrackingEnabled: true; touchEnabled: true"
           wasd-controls>
         </a-entity>
-
-        <!-- VR HUD：掛在 rig 下，JS 每幀更新 position + quaternion -->
-        <a-entity id="vrHud" visible="false">
-          <a-text id="vrTimerText" value="⏱ 00:00.00" color="#00ffcc" width="1.5" align="right" position="-0.06 0 0"></a-text>
-          <a-text value="|" color="#ffffff33" width="0.6" align="center" position="0 0 0"></a-text>
-          <a-text id="vrTargetText" value="找: --" color="#ff4466" width="1.5" align="left" position="0.06 0 0"></a-text>
-        </a-entity>
-
         <a-entity id="rHand"
           laser-controls="hand: right"
           raycaster="far: 30; near: 0; lineColor: #00ffcc; lineOpacity: 0.7; objects: .vrRayTarget">
         </a-entity>
-
         <a-entity id="lHand"
           laser-controls="hand: left"
           raycaster="far: 30; near: 0; lineColor: #00ffcc; lineOpacity: 0.4; objects: .vrRayTarget">
@@ -94,9 +85,30 @@
           font="https://cdn.aframe.io/fonts/Exo2Bold.fnt"></a-text>
       </a-entity>
 
+      <!--
+        arcRoot position="0 2.5 0"，JS 會設 rotation="0 90 0"
+        圓弧幾何中心在 arcRoot local (0,0,0)，RADIUS=8，牆高 WALL_H=5
+
+        平面版: planeRoot position="0 2.5 -8"，HUD local position="0 2.5 1.2"
+        → HUD 在牆正上方，local +y=2.5（牆頂），local z=1.2（稍微往玩家拉近）
+
+        圓弧版照抄：
+        - arcRoot rotation="0 90 0"，arcRoot local -x = world -z（朝玩家）
+        - 圓弧半徑 8，圓弧中心是 arcRoot origin (0,0,0)
+        - HUD 放在圓弧中央正上方，local y=3（牆頂上方），local x=-1（往玩家方向，因為旋轉後 -x = world -z）
+        - rotation="0 -90 0" 抵消父級 90 度，讓 HUD 正面朝向玩家（world -z）
+      -->
       <a-entity id="arcRoot" position="0 2.5 0" visible="false">
         <a-entity id="cylinderWall" class="clickable"></a-entity>
         <a-entity id="cylinderProxy" class="vrRayTarget"></a-entity>
+
+        <!-- HUD：local y=3 = 牆頂上方，local x=-1 稍往玩家偏，rotation 抵消父級讓正面朝玩家 -->
+        <a-entity id="vrHud" visible="false" position="7 3 0" rotation="0 -90 0">
+          <a-plane width="5.5" height="0.65" color="#000a12" opacity="0.85" position="0 0 -0.01"></a-plane>
+          <a-text id="vrTimerText" value="⏱ 00:00.00" color="#00ffcc" width="6" align="left" position="-2.4 0 0.01"></a-text>
+          <a-text value="|" color="#ffffff44" width="1.2" align="center" position="0 0 0.01"></a-text>
+          <a-text id="vrTargetText" value="找: --" color="#ff4466" width="6" align="right" position="2.4 0 0.01"></a-text>
+        </a-entity>
       </a-entity>
 
       <a-plane rotation="-90 0 0" width="30" height="30"
@@ -124,15 +136,6 @@
     const cylinderWallEl=document.querySelector('#cylinderWall');
     const cylinderProxyEl=document.querySelector('#cylinderProxy');
     const vrHudEl=document.getElementById('vrHud');
-
-    // 暫存向量，避免每幀 GC
-    const _camWorld=new THREE.Vector3();
-    const _rigWorld=new THREE.Vector3();
-    const _forward=new THREE.Vector3();
-    const _hudWorld=new THREE.Vector3();
-    const _camQuat=new THREE.Quaternion();
-    const _rigQuat=new THREE.Quaternion();
-    const _invRigQuat=new THREE.Quaternion();
 
     function initCanvas(){
       canvas=document.createElement('canvas');
@@ -193,7 +196,7 @@
       canvasTex=new THREE.CanvasTexture(canvas);
       canvasTex.wrapS=canvasTex.wrapT=THREE.ClampToEdgeWrapping;
       canvasTex.minFilter=canvasTex.magFilter=THREE.LinearFilter;
-      canvasTex.anisotropy=8;
+      canvasTex.anisotropy=16;
 
       cylinderMesh=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({map:canvasTex,side:THREE.FrontSide}));
       cylinderWallEl.object3D.add(cylinderMesh);
@@ -215,76 +218,15 @@
       },200);
     }
 
-    function updateVrHudPosition(){
-      if(!vrHudEl || vrHudEl.getAttribute('visible')==='false') return;
-      const cam=document.querySelector('#cam');
-      const rig=document.querySelector('#rig');
-      if(!cam||!rig) return;
-
-      // 取得相機世界座標與朝向
-      cam.object3D.getWorldPosition(_camWorld);
-      cam.object3D.getWorldQuaternion(_camQuat);
-
-      // 水平前方向（忽略 pitch，HUD 不跟著低頭）
-      _forward.set(0,0,-1).applyQuaternion(_camQuat);
-      _forward.y=0;
-      if(_forward.lengthSq()<0.0001) return;
-      _forward.normalize();
-
-      // HUD 世界座標 = 相機前方 1.4m，略高 0.25m
-      _hudWorld.copy(_camWorld).addScaledVector(_forward, 1.4);
-      _hudWorld.y=_camWorld.y+0.25;
-
-      // 轉成 rig local position
-      rig.object3D.getWorldPosition(_rigWorld);
-      vrHudEl.object3D.position.set(
-        _hudWorld.x-_rigWorld.x,
-        _hudWorld.y-_rigWorld.y,
-        _hudWorld.z-_rigWorld.z
-      );
-
-      // rig 的世界 quaternion 的逆，用來把世界朝向轉成 rig local 朝向
-      // 讓 HUD 正面朝向相機，不受 rig rotation 疊加影響
-      rig.object3D.getWorldQuaternion(_rigQuat);
-      _invRigQuat.copy(_rigQuat).invert();
-
-      // 計算「從 HUD 位置朝向相機」的世界朝向
-      // HUD 要面向相機：前方 = camWorld - hudWorld（已 normalize）
-      // Three.js Object3D 預設前方是 -Z，所以用 setFromUnitVectors(-Z → 朝相機方向)
-      const _faceDir=new THREE.Vector3().subVectors(_camWorld, _hudWorld).normalize();
-      const _worldFaceQuat=new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0,0,-1),
-        _faceDir
-      );
-
-      // local quaternion = inv(rigQuat) * worldFaceQuat
-      vrHudEl.object3D.quaternion.copy(_invRigQuat).multiply(_worldFaceQuat);
-    }
-
     function setVrHudVisible(v){
       vrHudEl.setAttribute('visible', v ? 'true' : 'false');
     }
 
     function buildVrResult(timeStr){
       removeVrResult();
-      const cam=document.querySelector('#cam');
-      const rig=document.querySelector('#rig');
-
       vrResultPanel=document.createElement('a-entity');
       vrResultPanel.setAttribute('id','vrResultPanel');
-
-      cam.object3D.getWorldPosition(_camWorld);
-      cam.object3D.getWorldQuaternion(_camQuat);
-      _forward.set(0,0,-1).applyQuaternion(_camQuat);
-      _forward.y=0; _forward.normalize();
-
-      const panelWorld=_camWorld.clone().addScaledVector(_forward, 7);
-      rig.object3D.getWorldPosition(_rigWorld);
-
-      vrResultPanel.setAttribute('position',
-        `${panelWorld.x-_rigWorld.x} ${_camWorld.y-_rigWorld.y} ${panelWorld.z-_rigWorld.z}`
-      );
-      vrResultPanel.setAttribute('look-at','#cam');
+      vrResultPanel.setAttribute('position','0 2.5 -5');
 
       const bg=document.createElement('a-plane');
       bg.setAttribute('width','3'); bg.setAttribute('height','1.4');
@@ -311,7 +253,7 @@
       rtxt.setAttribute('width','4'); rtxt.setAttribute('position','0 -0.52 0.03');
       vrResultPanel.appendChild(rtxt);
 
-      rig.appendChild(vrResultPanel);
+      document.querySelector('a-scene').appendChild(vrResultPanel);
       vrRetryMesh=rp;
 
       setTimeout(()=>{
@@ -336,7 +278,6 @@
       const t=formatTime(performance.now()-startTime);
       hud.textContent='⏱ '+t;
       if(vrTimerText) vrTimerText.setAttribute('value','⏱ '+t);
-      updateVrHudPosition();
       rafId=requestAnimationFrame(tick);
     }
 
@@ -373,6 +314,7 @@
       cancelAnimationFrame(rafId);
       const t=formatTime(performance.now()-startTime);
       hud.textContent='⏱ '+t; hud.style.color='#ffcc00';
+      if(vrTimerText) vrTimerText.setAttribute('value','⏱ '+t);
       resultDiv.innerHTML=`✓ &nbsp;${t}<br><span style="font-size:20px;color:#ff4466">Errors: ${errorCount}</span><br><span style="font-size:16px;color:#ffffff88">找到目標！</span>`;
       resultDiv.style.display='block';
       targetHint.style.display='none';
@@ -475,7 +417,6 @@
           const inter=intersections[0];
           const hitMesh=inter.object;
 
-          // start / retry
           const targets=getTargets().filter(t=>t.type!=='cylinder');
           for(const t of targets){
             let cur=hitMesh;
@@ -485,7 +426,6 @@
             }
           }
 
-          // proxy → cylinder
           if(gameState==='playing'&&proxyMesh){
             let cur=hitMesh;
             while(cur){
