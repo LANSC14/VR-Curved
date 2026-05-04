@@ -85,24 +85,10 @@
           font="https://cdn.aframe.io/fonts/Exo2Bold.fnt"></a-text>
       </a-entity>
 
-      <!--
-        arcRoot position="0 2.5 0"，JS 會設 rotation="0 90 0"
-        圓弧幾何中心在 arcRoot local (0,0,0)，RADIUS=8，牆高 WALL_H=5
-
-        平面版: planeRoot position="0 2.5 -8"，HUD local position="0 2.5 1.2"
-        → HUD 在牆正上方，local +y=2.5（牆頂），local z=1.2（稍微往玩家拉近）
-
-        圓弧版照抄：
-        - arcRoot rotation="0 90 0"，arcRoot local -x = world -z（朝玩家）
-        - 圓弧半徑 8，圓弧中心是 arcRoot origin (0,0,0)
-        - HUD 放在圓弧中央正上方，local y=3（牆頂上方），local x=-1（往玩家方向，因為旋轉後 -x = world -z）
-        - rotation="0 -90 0" 抵消父級 90 度，讓 HUD 正面朝向玩家（world -z）
-      -->
       <a-entity id="arcRoot" position="0 2.5 0" visible="false">
         <a-entity id="cylinderWall" class="clickable"></a-entity>
         <a-entity id="cylinderProxy" class="vrRayTarget"></a-entity>
 
-        <!-- HUD：local y=3 = 牆頂上方，local x=-1 稍往玩家偏，rotation 抵消父級讓正面朝玩家 -->
         <a-entity id="vrHud" visible="false" position="7 3 0" rotation="0 -90 0">
           <a-plane width="5.5" height="0.65" color="#000a12" opacity="0.85" position="0 0 -0.01"></a-plane>
           <a-text id="vrTimerText" value="⏱ 00:00.00" color="#00ffcc" width="6" align="left" position="-2.4 0 0.01"></a-text>
@@ -136,6 +122,7 @@
     const cylinderWallEl=document.querySelector('#cylinderWall');
     const cylinderProxyEl=document.querySelector('#cylinderProxy');
     const vrHudEl=document.getElementById('vrHud');
+    const sceneEl=document.querySelector('a-scene');
 
     function initCanvas(){
       canvas=document.createElement('canvas');
@@ -288,8 +275,11 @@
       buildCylinder();
 
       const camEl=document.querySelector('#cam');
-      const lc=camEl.components['look-controls'];
-      if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
+      // 只在非 VR 模式下重置視角，VR 模式讓 HMD 自己控制
+      if(!sceneEl.is('vr-mode')){
+        const lc=camEl.components['look-controls'];
+        if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
+      }
       camEl.setAttribute('position',{x:0,y:2.5,z:0});
 
       startBtn.setAttribute('visible','false');
@@ -436,9 +426,12 @@
         });
       });
 
+      // 只在非 VR 模式下重置視角
       setTimeout(()=>{
-        const lc=camEl.components['look-controls'];
-        if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
+        if(!sceneEl.is('vr-mode')){
+          const lc=camEl.components['look-controls'];
+          if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
+        }
       },0);
     });
     </script>
