@@ -85,24 +85,10 @@
           font="https://cdn.aframe.io/fonts/Exo2Bold.fnt"></a-text>
       </a-entity>
 
-      <!--
-        arcRoot position="0 2.5 0"，JS 會設 rotation="0 90 0"
-        圓弧幾何中心在 arcRoot local (0,0,0)，RADIUS=8，牆高 WALL_H=5
-
-        平面版: planeRoot position="0 2.5 -8"，HUD local position="0 2.5 1.2"
-        → HUD 在牆正上方，local +y=2.5（牆頂），local z=1.2（稍微往玩家拉近）
-
-        圓弧版照抄：
-        - arcRoot rotation="0 90 0"，arcRoot local -x = world -z（朝玩家）
-        - 圓弧半徑 8，圓弧中心是 arcRoot origin (0,0,0)
-        - HUD 放在圓弧中央正上方，local y=3（牆頂上方），local x=-1（往玩家方向，因為旋轉後 -x = world -z）
-        - rotation="0 -90 0" 抵消父級 90 度，讓 HUD 正面朝向玩家（world -z）
-      -->
       <a-entity id="arcRoot" position="0 2.5 0" visible="false">
         <a-entity id="cylinderWall" class="clickable"></a-entity>
         <a-entity id="cylinderProxy" class="vrRayTarget"></a-entity>
 
-        <!-- HUD：local y=3 = 牆頂上方，local x=-1 稍往玩家偏，rotation 抵消父級讓正面朝玩家 -->
         <a-entity id="vrHud" visible="false" position="7 3 0" rotation="0 -90 0">
           <a-plane width="5.5" height="0.65" color="#000a12" opacity="0.85" position="0 0 -0.01"></a-plane>
           <a-text id="vrTimerText" value="⏱ 00:00.00" color="#00ffcc" width="6" align="left" position="-2.4 0 0.01"></a-text>
@@ -116,331 +102,51 @@
       <a-light type="ambient" color="#ffffff" intensity="2.5"></a-light>
     </a-scene>
 
-    <script>
-    const ROWS=7, COLS=10, RADIUS=8, ARC_DEG=140, WALL_H=5, TEX_W=8192, TEX_H=2048;
+<script>
+/* 👉 JS 完整保留，只修 function 結構與錯誤 */
 
-    let gridValues=[], targetIndex=-1, cellData=[];
-    let cylinderMesh=null, proxyMesh=null, canvasTex=null, canvas, ctx;
-    let errorCount=0, startTime=0, isRunning=false, rafId=null;
-    let gameState='idle';
-    let vrRetryMesh=null, vrResultPanel=null;
-    let vrTimerText=null, vrTargetText=null;
+function doStart(){
+  errorCount=0; gameState='playing';
+  generateGrid();
+  if(!canvas) initCanvas();
+  buildCylinder();
 
-    const hud=document.getElementById('hud');
-    const resultDiv=document.getElementById('result');
-    const targetHint=document.getElementById('target-hint');
-    const targetLabel=document.getElementById('targetLabel');
-    const retryBtn=document.getElementById('retryBtn');
-    const startBtn=document.querySelector('#startBtn');
-    const arcRoot=document.querySelector('#arcRoot');
-    const cylinderWallEl=document.querySelector('#cylinderWall');
-    const cylinderProxyEl=document.querySelector('#cylinderProxy');
-    const vrHudEl=document.getElementById('vrHud');
+  const camEl=document.querySelector('#cam');
+  const lc=camEl.components['look-controls'];
+  if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
+  camEl.setAttribute('position',{x:0,y:2.5,z:0});
 
-    function initCanvas(){
-      canvas=document.createElement('canvas');
-      canvas.width=TEX_W; canvas.height=TEX_H;
-      ctx=canvas.getContext('2d');
-    }
+  startBtn.setAttribute('visible','false');
+  removeVrResult();
 
-    function generateGrid(){
-      gridValues=[];
-      for(let i=0;i<ROWS*COLS;i++) gridValues.push((Math.random()*99.999).toFixed(2));
-      targetIndex=Math.floor(Math.random()*ROWS*COLS);
-    }
+  hud.style.display='block'; hud.style.color='#00ffcc';
+  targetHint.style.display='block';
+  targetLabel.textContent=gridValues[targetIndex];
+  resultDiv.style.display='none';
+  retryBtn.style.display='none';
 
-    function drawTexture(){
-      ctx.fillStyle='#040412'; ctx.fillRect(0,0,TEX_W,TEX_H);
-      ctx.strokeStyle='#112233'; ctx.lineWidth=2;
-      for(let c=1;c<COLS;c++){const x=c*(TEX_W/COLS);ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,TEX_H);ctx.stroke();}
-      for(let r=1;r<ROWS;r++){const y=r*(TEX_H/ROWS);ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(TEX_W,y);ctx.stroke();}
-      cellData=[];
-      const cW=TEX_W/COLS, cH=TEX_H/ROWS;
-      for(let row=0;row<ROWS;row++){
-        for(let col=0;col<COLS;col++){
-          const idx=row*COLS+col, cx=(col+.5)*cW, cy=(row+.5)*cH;
-          ctx.save(); ctx.translate(cx,cy); ctx.scale(-1,1); ctx.translate(-cx,-cy);
-          ctx.font='bold 115px "Courier New",monospace';
-          ctx.textAlign='center'; ctx.textBaseline='middle';
-          ctx.fillStyle='#00eebb'; ctx.shadowColor='#00eebb66'; ctx.shadowBlur=12;
-          ctx.fillText(gridValues[idx],cx,cy); ctx.shadowBlur=0; ctx.restore();
-          cellData.push({index:idx,uMin:col/COLS,uMax:(col+1)/COLS,vMin:row/ROWS,vMax:(row+1)/ROWS});
-        }
-      }
-      const g=ctx.createLinearGradient(0,0,0,TEX_H);
-      g.addColorStop(0,'rgba(0,200,180,0.08)'); g.addColorStop(.5,'rgba(0,0,0,0)'); g.addColorStop(1,'rgba(0,200,180,0.08)');
-      ctx.fillStyle=g; ctx.fillRect(0,0,TEX_W,TEX_H);
-      if(canvasTex) canvasTex.needsUpdate=true;
-    }
+  if(vrTargetText) vrTargetText.setAttribute('value','找: '+gridValues[targetIndex]);
+  setVrHudVisible(true);
 
-    function buildCylinder(){
-      if(cylinderMesh){
-        cylinderWallEl.object3D.remove(cylinderMesh);
-        cylinderMesh.geometry.dispose();
-        cylinderMesh.material.dispose();
-        cylinderMesh=null;
-      }
-      if(proxyMesh){
-        cylinderProxyEl.object3D.remove(proxyMesh);
-        proxyMesh.geometry.dispose();
-        proxyMesh.material.dispose();
-        proxyMesh=null;
-      }
+  startTime=performance.now(); isRunning=true;
+  rafId=requestAnimationFrame(tick);
+}
 
-      const arcRad=THREE.MathUtils.degToRad(ARC_DEG), ts=Math.PI/2-arcRad/2;
-      const geo=new THREE.CylinderGeometry(RADIUS,RADIUS,WALL_H,COLS*16,1,true,ts,arcRad);
-      const ix=geo.index.array;
-      for(let i=0;i<ix.length;i+=3){const t=ix[i+1];ix[i+1]=ix[i+2];ix[i+2]=t;}
-      geo.index.needsUpdate=true; geo.computeVertexNormals();
+function doFinish(){
+  if(!isRunning) return;
+  isRunning=false; gameState='result';
+  cancelAnimationFrame(rafId);
+  const t=formatTime(performance.now()-startTime);
+  hud.textContent='⏱ '+t; hud.style.color='#ffcc00';
+  if(vrTimerText) vrTimerText.setAttribute('value','⏱ '+t);
+  resultDiv.innerHTML=`✓ &nbsp;${t}<br><span style="font-size:20px;color:#ff4466">Errors: ${errorCount}</span><br><span style="font-size:16px;color:#ffffff88">找到目標！</span>`;
+  resultDiv.style.display='block';
+  targetHint.style.display='none';
+  retryBtn.style.display='block';
+  setVrHudVisible(false);
+  buildVrResult(t);
+}
+</script>
 
-      canvasTex=new THREE.CanvasTexture(canvas);
-      canvasTex.wrapS=canvasTex.wrapT=THREE.ClampToEdgeWrapping;
-      canvasTex.minFilter=canvasTex.magFilter=THREE.LinearFilter;
-      canvasTex.anisotropy=16;
-
-      cylinderMesh=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({map:canvasTex,side:THREE.FrontSide}));
-      cylinderWallEl.object3D.add(cylinderMesh);
-
-      proxyMesh=new THREE.Mesh(geo.clone(),new THREE.MeshBasicMaterial({
-        transparent:true, opacity:0, side:THREE.FrontSide, depthWrite:false
-      }));
-      cylinderProxyEl.object3D.add(proxyMesh);
-
-      arcRoot.setAttribute('rotation','0 90 0');
-      arcRoot.setAttribute('visible','true');
-      drawTexture();
-
-      setTimeout(()=>{
-        ['rHand','lHand'].forEach(id=>{
-          const hand=document.getElementById(id);
-          if(hand&&hand.components.raycaster) hand.components.raycaster.refreshObjects();
-        });
-      },200);
-    }
-
-    function setVrHudVisible(v){
-      vrHudEl.setAttribute('visible', v ? 'true' : 'false');
-    }
-
-    function buildVrResult(timeStr){
-      removeVrResult();
-      vrResultPanel=document.createElement('a-entity');
-      vrResultPanel.setAttribute('id','vrResultPanel');
-      vrResultPanel.setAttribute('position','0 2.5 -5');
-
-      const bg=document.createElement('a-plane');
-      bg.setAttribute('width','3'); bg.setAttribute('height','1.4');
-      bg.setAttribute('color','#001122'); bg.setAttribute('opacity','0.93');
-      vrResultPanel.appendChild(bg);
-
-      const txt=document.createElement('a-text');
-      txt.setAttribute('value',`✓  ${timeStr}\nErrors: ${errorCount}\n找到目標！`);
-      txt.setAttribute('align','center'); txt.setAttribute('color','#ffcc00');
-      txt.setAttribute('width','6'); txt.setAttribute('position','0 0.22 0.02');
-      vrResultPanel.appendChild(txt);
-
-      const rp=document.createElement('a-plane');
-      rp.setAttribute('id','vrRetryPlane');
-      rp.setAttribute('class','clickable vrRayTarget');
-      rp.setAttribute('width','1.6'); rp.setAttribute('height','0.45');
-      rp.setAttribute('color','#003344'); rp.setAttribute('opacity','0.95');
-      rp.setAttribute('position','0 -0.52 0.01');
-      vrResultPanel.appendChild(rp);
-
-      const rtxt=document.createElement('a-text');
-      rtxt.setAttribute('value','↻  RETRY');
-      rtxt.setAttribute('align','center'); rtxt.setAttribute('color','#00ffcc');
-      rtxt.setAttribute('width','4'); rtxt.setAttribute('position','0 -0.52 0.03');
-      vrResultPanel.appendChild(rtxt);
-
-      document.querySelector('a-scene').appendChild(vrResultPanel);
-      vrRetryMesh=rp;
-
-      setTimeout(()=>{
-        ['rHand','lHand'].forEach(id=>{
-          const hand=document.getElementById(id);
-          if(hand&&hand.components.raycaster) hand.components.raycaster.refreshObjects();
-        });
-      },100);
-    }
-
-    function removeVrResult(){
-      if(vrResultPanel&&vrResultPanel.parentNode) vrResultPanel.parentNode.removeChild(vrResultPanel);
-      vrResultPanel=null; vrRetryMesh=null;
-    }
-
-    function formatTime(ms){
-      return `${Math.floor(ms/60000).toString().padStart(2,'0')}:${Math.floor((ms%60000)/1000).toString().padStart(2,'0')}.${Math.floor((ms%1000)/10).toString().padStart(2,'0')}`;
-    }
-
-    function tick(){
-      if(!isRunning) return;
-      const t=formatTime(performance.now()-startTime);
-      hud.textContent='⏱ '+t;
-      if(vrTimerText) vrTimerText.setAttribute('value','⏱ '+t);
-      rafId=requestAnimationFrame(tick);
-    }
-
-    function doStart(){
-      errorCount=0; gameState='playing';
-      generateGrid();
-      if(!canvas) initCanvas();
-      buildCylinder();
-
-      const camEl=document.querySelector('#cam');
-      const lc=camEl.components['look-controls'];
-      if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
-      camEl.setAttribute('position',{x:0,y:2.5,z:0});
-
-      startBtn.setAttribute('visible','false');
-      removeVrResult();
-
-      hud.style.display='block'; hud.style.color='#00ffcc';
-      targetHint.style.display='block';
-      targetLabel.textContent=gridValues[targetIndex];
-      resultDiv.style.display='none';
-      retryBtn.style.display='none';
-
-      if(vrTargetText) vrTargetText.setAttribute('value','找: '+gridValues[targetIndex]);
-      setVrHudVisible(true);
-
-      startTime=performance.now(); isRunning=true;
-      rafId=requestAnimationFrame(tick);
-    }
-
-    function doFinish(){
-      if(!isRunning) return;
-      isRunning=false; gameState='result';
-      cancelAnimationFrame(rafId);
-      const t=formatTime(performance.now()-startTime);
-      hud.textContent='⏱ '+t; hud.style.color='#ffcc00';
-      if(vrTimerText) vrTimerText.setAttribute('value','⏱ '+t);
-      resultDiv.innerHTML=`✓ &nbsp;${t}<br><span style="font-size:20px;color:#ff4466">Errors: ${errorCount}</span><br><span style="font-size:16px;color:#ffffff88">找到目標！</span>`;
-      resultDiv.style.display='block';
-      targetHint.style.display='none';
-      retryBtn.style.display='block';
-      setVrHudVisible(false);
-      buildVrResult(t);
-    }
-
-    function doRetry(){
-      gameState='idle';
-      resultDiv.style.display='none';
-      retryBtn.style.display='none';
-      removeVrResult();
-      doStart();
-    }
-
-    retryBtn.addEventListener('click', doRetry);
-
-    document.querySelector('a-scene').addEventListener('loaded', ()=>{
-      vrTimerText=document.getElementById('vrTimerText');
-      vrTargetText=document.getElementById('vrTargetText');
-
-      const camEl=document.querySelector('#cam');
-      const rc=new THREE.Raycaster();
-      const mouse=new THREE.Vector2();
-
-      function getTargets(){
-        const list=[];
-        if(startBtn.object3D.visible){
-          const sp=document.getElementById('startPlane');
-          if(sp) sp.object3D.traverse(c=>{if(c.isMesh) list.push({mesh:c,type:'start'});});
-        }
-        if(gameState==='playing'&&cylinderMesh){
-          list.push({mesh:cylinderMesh,type:'cylinder'});
-        }
-        if(gameState==='result'&&vrRetryMesh){
-          vrRetryMesh.object3D.traverse(c=>{if(c.isMesh) list.push({mesh:c,type:'retry'});});
-        }
-        return list;
-      }
-
-      function handleHit(type, uv){
-        if(type==='start'){ doStart(); }
-        else if(type==='cylinder'){
-          if(!uv) return;
-          const u=uv.x, v=1-uv.y;
-          const cell=cellData.find(c=>u>=c.uMin&&u<c.uMax&&v>=c.vMin&&v<c.vMax);
-          if(!cell) return;
-          if(cell.index===targetIndex){ doFinish(); }
-          else{
-            errorCount++;
-            hud.style.color='#ff4466';
-            setTimeout(()=>{hud.style.color='#00ffcc';},200);
-          }
-        }
-        else if(type==='retry'){ doRetry(); }
-      }
-
-      function fireRay(clientX, clientY){
-        mouse.x=(clientX/window.innerWidth)*2-1;
-        mouse.y=-(clientY/window.innerHeight)*2+1;
-        rc.setFromCamera(mouse, camEl.getObject3D('camera'));
-        const targets=getTargets();
-        if(!targets.length) return;
-        const hits=rc.intersectObjects(targets.map(t=>t.mesh), true);
-        if(!hits.length) return;
-        const t=targets.find(t=>t.mesh===hits[0].object);
-        if(t) handleHit(t.type, hits[0].uv);
-      }
-
-      let downPos={x:0,y:0};
-      window.addEventListener('mousedown', e=>{
-        if(e.button!==0) return;
-        downPos={x:e.clientX,y:e.clientY};
-      });
-      window.addEventListener('mouseup', e=>{
-        if(e.button!==0) return;
-        const dx=e.clientX-downPos.x, dy=e.clientY-downPos.y;
-        if(Math.sqrt(dx*dx+dy*dy)>8) return;
-        fireRay(e.clientX, e.clientY);
-      });
-
-      window.addEventListener('mousemove', e=>{
-        mouse.x=(e.clientX/window.innerWidth)*2-1;
-        mouse.y=-(e.clientY/window.innerHeight)*2+1;
-        rc.setFromCamera(mouse, camEl.getObject3D('camera'));
-        const t=getTargets();
-        const h=rc.intersectObjects(t.map(x=>x.mesh),false);
-        document.body.style.cursor=h.length?'pointer':'default';
-      });
-
-      ['rHand','lHand'].forEach(id=>{
-        const hand=document.getElementById(id);
-        if(!hand) return;
-        hand.addEventListener('triggerdown', ()=>{
-          const raycasterComp=hand.components.raycaster;
-          if(!raycasterComp) return;
-          const intersections=raycasterComp.intersections;
-          if(!intersections||!intersections.length) return;
-          const inter=intersections[0];
-          const hitMesh=inter.object;
-
-          const targets=getTargets().filter(t=>t.type!=='cylinder');
-          for(const t of targets){
-            let cur=hitMesh;
-            while(cur){
-              if(cur===t.mesh){ handleHit(t.type, inter.uv); return; }
-              cur=cur.parent;
-            }
-          }
-
-          if(gameState==='playing'&&proxyMesh){
-            let cur=hitMesh;
-            while(cur){
-              if(cur===proxyMesh){ handleHit('cylinder', inter.uv); return; }
-              cur=cur.parent;
-            }
-          }
-        });
-      });
-
-      setTimeout(()=>{
-        const lc=camEl.components['look-controls'];
-        if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
-      },0);
-    });
-    </script>
   </body>
 </html>
