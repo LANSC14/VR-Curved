@@ -59,7 +59,7 @@
     <div id="target-hint">找到並點擊：<span id="targetLabel">--</span></div>
     <div id="retryBtn">↻ RETRY</div>
 
-    <a-scene background="color: #0a0a1a" vr-mode-ui="enabled: true">
+    <a-scene timer-logic background="color: #0a0a1a" vr-mode-ui="enabled: true">
       <a-entity id="rig" position="0 0 0" wasd-controls>
         <a-entity id="cam" camera position="0 2.5 0"
           look-controls="pointerLockEnabled: false; magicWindowTrackingEnabled: true; touchEnabled: true"
@@ -67,11 +67,11 @@
         </a-entity>
         <a-entity id="rHand"
           laser-controls="hand: right"
-          raycaster="far: 30; near: 0; lineColor: #00ffcc; lineOpacity: 0.7; objects: .vrRayTarget">
+          raycaster="far: 8; near: 0; lineColor: #00ffcc; lineOpacity: 0.7; objects: .vrRayTarget">
         </a-entity>
         <a-entity id="lHand"
           laser-controls="hand: left"
-          raycaster="far: 30; near: 0; lineColor: #00ffcc; lineOpacity: 0.4; objects: .vrRayTarget">
+          raycaster="far: 8; near: 0; lineColor: #00ffcc; lineOpacity: 0.4; objects: .vrRayTarget">
         </a-entity>
       </a-entity>
 
@@ -107,7 +107,8 @@
 
     let gridValues=[], targetIndex=-1, cellData=[];
     let cylinderMesh=null, proxyMesh=null, canvasTex=null, canvas, ctx;
-    let errorCount=0, startTime=0, isRunning=false, rafId=null;
+    let errorCount=0, startTime=0;
+    window.isRunning=false;
     let gameState='idle';
     let vrRetryMesh=null, vrResultPanel=null;
     let vrTimerText=null, vrTargetText=null;
@@ -123,6 +124,50 @@
     const cylinderProxyEl=document.querySelector('#cylinderProxy');
     const vrHudEl=document.getElementById('vrHud');
     const sceneEl=document.querySelector('a-scene');
+
+    // ✅ timer-logic component — 掛在 a-scene 上，每幀由 A-Frame 驅動
+    AFRAME.registerComponent('timer-logic', {
+      init: function () {
+        this.hudText = document.getElementById('hud');
+        this.vrTimer = null;
+        this.vrTarget = null;
+        this.lastTarget = '';
+      },
+
+      tick: function () {
+        if (!window.isRunning) return;
+
+        const t = formatTime(performance.now() - startTime);
+
+        // 1️⃣ 2D HUD
+        if (this.hudText) {
+          this.hudText.textContent = '⏱ ' + t;
+        }
+
+        // 2️⃣ Lazy 抓 VR 元件（只抓一次）
+        if (!this.vrTimer) {
+          this.vrTimer = document.querySelector('#vrTimerText');
+          if (!this.vrTimer) return;
+        }
+
+        if (!this.vrTarget) {
+          this.vrTarget = document.querySelector('#vrTargetText');
+        }
+
+        // 3️⃣ 更新 VR timer
+        this.vrTimer.setAttribute('value', '⏱ ' + t);
+
+        // 4️⃣ 更新 target（避免重複 set）
+        const targetVal = gridValues[targetIndex]
+          ? '找: ' + gridValues[targetIndex]
+          : '找: --';
+
+        if (this.vrTarget && this.lastTarget !== targetVal) {
+          this.vrTarget.setAttribute('value', targetVal);
+          this.lastTarget = targetVal;
+        }
+      }
+    });
 
     function initCanvas(){
       canvas=document.createElement('canvas');
@@ -260,14 +305,6 @@
       return `${Math.floor(ms/60000).toString().padStart(2,'0')}:${Math.floor((ms%60000)/1000).toString().padStart(2,'0')}.${Math.floor((ms%1000)/10).toString().padStart(2,'0')}`;
     }
 
-    function tick(){
-      if(!isRunning) return;
-      const t=formatTime(performance.now()-startTime);
-      hud.textContent='⏱ '+t;
-      if(vrTimerText) vrTimerText.setAttribute('value','⏱ '+t);
-      rafId=requestAnimationFrame(tick);
-    }
-
     function doStart(){
       errorCount=0; gameState='playing';
       generateGrid();
@@ -291,17 +328,16 @@
       resultDiv.style.display='none';
       retryBtn.style.display='none';
 
-      if(vrTargetText) vrTargetText.setAttribute('value','找: '+gridValues[targetIndex]);
       setVrHudVisible(true);
 
-      startTime=performance.now(); isRunning=true;
-      rafId=requestAnimationFrame(tick);
+      // ✅ 只設 startTime / isRunning，由 timer-logic component 的 tick 驅動更新
+      startTime=performance.now();
+      window.isRunning=true;
     }
 
     function doFinish(){
-      if(!isRunning) return;
-      isRunning=false; gameState='result';
-      cancelAnimationFrame(rafId);
+      if(!window.isRunning) return;
+      window.isRunning=false; gameState='result';
       const t=formatTime(performance.now()-startTime);
       hud.textContent='⏱ '+t; hud.style.color='#ffcc00';
       if(vrTimerText) vrTimerText.setAttribute('value','⏱ '+t);
