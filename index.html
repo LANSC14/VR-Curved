@@ -60,22 +60,23 @@
     <div id="retryBtn">↻ RETRY</div>
 
     <a-scene timer-logic background="color: #0a0a1a" vr-mode-ui="enabled: true">
+      <!-- rig y=0：WebXR floor-level，HMD 自動在約 y=1.6 -->
       <a-entity id="rig" position="0 0 0" wasd-controls>
-        <a-entity id="cam" camera position="0 2.5 0"
-          look-controls="pointerLockEnabled: false; magicWindowTrackingEnabled: true; touchEnabled: true"
-          >
+        <a-entity id="cam" camera position="0 1.6 0"
+          look-controls="pointerLockEnabled: false; magicWindowTrackingEnabled: true; touchEnabled: true">
         </a-entity>
+        <!-- raycaster 不限 objects，讓 triggerdown 自己篩；射線仍顯示 -->
         <a-entity id="rHand"
           laser-controls="hand: right"
-          raycaster="far: 8; near: 0; lineColor: #00ffcc; lineOpacity: 0.7; objects: .vrRayTarget">
+          raycaster="far: 18; near: 0; lineColor: #00ffcc; lineOpacity: 0.7">
         </a-entity>
         <a-entity id="lHand"
           laser-controls="hand: left"
-          raycaster="far: 8; near: 0; lineColor: #00ffcc; lineOpacity: 0.4; objects: .vrRayTarget">
+          raycaster="far: 18; near: 0; lineColor: #00ffcc; lineOpacity: 0.4">
         </a-entity>
       </a-entity>
 
-      <a-entity id="startBtn" position="0 2.5 -2.5">
+      <a-entity id="startBtn" position="0 1.6 -2.5">
         <a-plane id="startPlane" class="clickable vrRayTarget"
           width="1.2" height="0.45" color="#003344" opacity="0.95"></a-plane>
         <a-plane width="1.26" height="0.51" color="#00ffcc" opacity="0.25"
@@ -258,7 +259,7 @@
       removeVrResult();
       vrResultPanel=document.createElement('a-entity');
       vrResultPanel.setAttribute('id','vrResultPanel');
-      vrResultPanel.setAttribute('position','0 2.5 -5');
+      vrResultPanel.setAttribute('position','0 1.6 -3');
 
       const bg=document.createElement('a-plane');
       bg.setAttribute('width','3'); bg.setAttribute('height','1.4');
@@ -312,12 +313,12 @@
       buildCylinder();
 
       const camEl=document.querySelector('#cam');
-      // 只在非 VR 模式下重置視角，VR 模式讓 HMD 自己控制
+      // VR 模式：完全不碰 camera，讓 HMD 控制
       if(!sceneEl.is('vr-mode')){
         const lc=camEl.components['look-controls'];
         if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
+        camEl.setAttribute('position',{x:0,y:1.6,z:0});
       }
-      camEl.setAttribute('position',{x:0,y:2.5,z:0});
 
       startBtn.setAttribute('visible','false');
       removeVrResult();
@@ -438,27 +439,34 @@
         hand.addEventListener('triggerdown', ()=>{
           const raycasterComp=hand.components.raycaster;
           if(!raycasterComp) return;
-          const intersections=raycasterComp.intersections;
-          if(!intersections||!intersections.length) return;
-          const inter=intersections[0];
-          const hitMesh=inter.object;
 
-          const targets=getTargets().filter(t=>t.type!=='cylinder');
-          for(const t of targets){
-            let cur=hitMesh;
-            while(cur){
-              if(cur===t.mesh){ handleHit(t.type, inter.uv); return; }
-              cur=cur.parent;
-            }
+          // 收集所有可能被打到的 Three.js mesh
+          const scanMeshes=[];
+
+          // startBtn
+          if(startBtn.object3D.visible){
+            const sp=document.getElementById('startPlane');
+            if(sp) sp.object3D.traverse(c=>{if(c.isMesh) scanMeshes.push({mesh:c,type:'start'});});
           }
-
+          // cylinder（playing 狀態）
           if(gameState==='playing'&&proxyMesh){
-            let cur=hitMesh;
-            while(cur){
-              if(cur===proxyMesh){ handleHit('cylinder', inter.uv); return; }
-              cur=cur.parent;
-            }
+            scanMeshes.push({mesh:proxyMesh,type:'cylinder'});
           }
+          // retry panel
+          if(gameState==='result'&&vrRetryMesh){
+            vrRetryMesh.object3D.traverse(c=>{if(c.isMesh) scanMeshes.push({mesh:c,type:'retry'});});
+          }
+
+          if(!scanMeshes.length) return;
+
+          // 用 raycaster component 的 Three.js raycaster 直接打
+          const ray=raycasterComp.raycaster;
+          const hits=ray.intersectObjects(scanMeshes.map(s=>s.mesh), false);
+          if(!hits.length) return;
+
+          const hitMesh=hits[0].object;
+          const found=scanMeshes.find(s=>s.mesh===hitMesh);
+          if(found) handleHit(found.type, hits[0].uv);
         });
       });
 
@@ -467,6 +475,7 @@
         if(!sceneEl.is('vr-mode')){
           const lc=camEl.components['look-controls'];
           if(lc){lc.yawObject.rotation.y=0;lc.pitchObject.rotation.x=0;}
+          camEl.setAttribute('position',{x:0,y:1.6,z:0});
         }
       },0);
     });
